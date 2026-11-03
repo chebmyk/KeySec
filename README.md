@@ -28,6 +28,20 @@ keysec:
 
 Provider names are the values selected by API calls. The `type` identifies the in-process implementation. Do not store raw credentials, encryption keys, or secret values in this file. Azure Key Vault uses the Azure identity available to the process.
 
+The `services` and `crypto` categories each have a `cipher_prefix` for encrypted provider-setting values. Both default to `ENC`; a provider's `settings.cipher_prefix` overrides its category value. This is separate from the service `secret_prefix` used by `get_secret`, which defaults to `KEY`.
+
+Configuration string values support `${NAME}` environment-variable references. KeySec expands references recursively in YAML values, including nested provider settings and lists; mapping keys and non-string values are left unchanged. Substituted text is treated literally and is not expanded again. If a referenced variable is unset, configuration loading fails with an explicit error. For example:
+
+```yaml
+keysec:
+  services:
+    providers:
+      vault:
+        type: azure-key-vault
+        settings:
+          client_secret: ${SEC_VAR}
+```
+
 ## Public API
 
 `KeySec` loads the configuration from `KEYSEC_CONFIG` or `./keysec.yaml`. The `provider` argument selects a configured name from the relevant section; omitting it uses that section's default:
@@ -38,7 +52,7 @@ from keysec import KeySec
 keysec = KeySec()
 
 # Retrieve a string secret using keysec.services.default ("vault").
-database_password = keysec.get_secret("database-password")
+database_password = keysec.get_secret("KEY(database-password)")
 
 # Look up a crypto provider and use its crypto operations directly.
 crypto = keysec.get_provider("local", provider_type="crypto")
@@ -49,11 +63,42 @@ plaintext = crypto.decrypt(ciphertext)
 
 `get_secret` returns a string. `get_provider(name, provider_type=None)` returns an instantiated provider configured by name. `provider_type` may be `"service"` or `"crypto"`; when omitted, the name must exist in only one category, otherwise lookup raises an ambiguity error. Unknown names and categories raise configuration errors. Crypto-provider instances expose `encrypt`, `decrypt`, and `generate_key`; `KeySec` itself does not.
 
+Service providers use `KEY` as the default wrapper for secret identifiers. Existing unwrapped identifiers are also accepted. To use a different prefix for a particular service provider, set `secret_prefix` in that provider's `settings` and use the matching wrapper when calling `get_secret`:
+
+```yaml
+keysec:
+  services:
+    providers:
+      vault:
+        type: azure-key-vault
+        settings:
+          vault_url: https://example.vault.azure.net/
+          secret_prefix: AZURE
+```
+
+With that override, call `keysec.get_secret("AZURE(database-password)")`; without it, use `keysec.get_secret("KEY(database-password)")`.
+
 ## Azure Key Vault
 
 The built-in `azure-key-vault` service provider requires an HTTPS `vault_url`. If `tenant_id`, `client_id`, `client_secret`, and `certificate_path` are all omitted, it uses Azure's `DefaultAzureCredential` chain; for local development, sign in with the Azure CLI. In deployed environments, use the workload's managed or federated identity. Grant the selected identity permission to read secrets from the configured vault (for example, the Key Vault Secrets User data-plane role when using Azure RBAC).
 
-For service-principal authentication, set `tenant_id`, `client_id`, and either or both credential fields directly under the provider's `settings`. `client_secret` is the name of an environment variable that contains the client-secret value; provision that variable through the deployment platform's protected environment or secret-injection mechanism, not in YAML:
+For service-principal authentication, set `tenant_id`, `client_id`, and either or both credential fields directly under the provider's `settings`. Prefer `${NAME}` to expand a protected environment variable to its value. An expanded `client_secret` is passed directly to Azure authentication:
+
+```yaml
+keysec:
+  services:
+    default: vault
+    providers:
+      vault:
+        type: azure-key-vault
+        settings:
+          vault_url: https://example.vault.azure.net/
+          tenant_id: 00000000-0000-0000-0000-000000000000
+          client_id: 11111111-1111-1111-1111-111111111111
+          client_secret: ${SEC_VAR}
+```
+
+For backward compatibility, an unwrapped literal `client_secret` is still interpreted as the name of an environment variable containing the secret. Provision that variable through the deployment platform's protected environment or secret-injection mechanism, not in YAML:
 
 ```yaml
 keysec:
@@ -68,6 +113,32 @@ keysec:
           client_id: 11111111-1111-1111-1111-111111111111
           client_secret: KEYSEC_AZURE_CLIENT_SECRET
 ```
+
+Alternatively, store the client secret as a wrapped ciphertext. First generate and securely provision the default crypto provider's key separately, then configure its key-file path in the main `keysec` YAML. Use that provider (with the same key and effective crypto cipher prefix) to encrypt the client-secret value. Put the resulting wrapped string in the Azure provider settings:
+
+```yaml
+keysec:
+  services:
+    cipher_prefix: ENC
+    default: vault
+    providers:
+      vault:
+        type: azure-key-vault
+        settings:
+          vault_url: https://example.vault.azure.net/
+          tenant_id: 00000000-0000-0000-0000-000000000000
+          client_id: 11111111-1111-1111-1111-111111111111
+          client_secret: ENC(ks1:<encrypted-payload>)
+  crypto:
+    default: local
+    providers:
+      local:
+        type: aes-gcm
+        settings:
+          key_file: /run/secrets/keysec-encryption.key
+```
+
+The key file and the default crypto provider's bootstrap settings must remain available as plaintext configuration; provider-setting decryption cannot bootstrap its own key. When `client_secret` uses its effective service cipher prefix, KeySec decrypts it and passes the result directly to Azure authentication. If it is unwrapped, KeySec preserves the existing environment-variable-name behavior. A wrapped value that fails decryption is an error and is never retried as an environment-variable name.
 
 Alternatively, set `certificate_path` to an unencrypted local certificate file that includes its private key:
 
@@ -128,9 +199,11 @@ from keysec.providers.crypto import CryptoProvider, register_crypto_provider
 
 class CustomCryptoProvider(CryptoProvider):
     def encrypt(self, plaintext: str, key_file: str | None = None) -> str:
-        ...
+        encrypted = ...
+        return self.wrap_ciphertext(encrypted)
 
     def decrypt(self, ciphertext: str, key_file: str | None = None) -> str:
+        encoded = self.unwrap_ciphertext(ciphertext)
         ...
 
     def generate_key(self, output_path: str | None = None) -> str:
@@ -141,6 +214,21 @@ register_crypto_provider("custom-crypto", CustomCryptoProvider)
 ```
 
 Set the crypto provider entry's `type` to `custom-crypto`; callers pass its configured name to `KeySec.get_provider(name, provider_type="crypto")`. The built-in `aes-gcm` type is registered automatically.
+
+Crypto providers use `ENC` as the default output wrapper. Set a provider's `cipher_prefix` setting to override it. Custom crypto providers should use `wrap_ciphertext` for encrypted output and `unwrap_ciphertext` before decrypting; the latter leaves existing unwrapped values unchanged.
+
+For example, set the override alongside the provider's other settings:
+
+```yaml
+keysec:
+  crypto:
+    providers:
+      local:
+        type: aes-gcm
+        settings:
+          key_file: ./local.key
+          cipher_prefix: SEALED
+```
 
 ## AES-GCM keys and ciphertext
 
@@ -155,4 +243,4 @@ ciphertext = provider.encrypt("Hello, 世界")
 plaintext = provider.decrypt(ciphertext)
 ```
 
-Ciphertext is a string in the versioned `ks1:` format. Its URL-safe Base64 payload contains the 12-byte nonce followed by AES-GCM ciphertext and its 16-byte authentication tag. The nonce is freshly generated for each encryption. UTF-8 is used for text input and output. Decryption rejects malformed, unsupported-version, or unauthenticated ciphertext without returning plaintext.
+AES-GCM ciphertext is returned as `ENC(ks1:<payload>)` by default. Set `cipher_prefix` in that provider's `settings` to choose another wrapper prefix. The versioned `ks1:` payload remains URL-safe Base64 and contains the 12-byte nonce followed by AES-GCM ciphertext and its 16-byte authentication tag. The nonce is freshly generated for each encryption. UTF-8 is used for text input and output. Decryption accepts both the wrapped form and legacy bare `ks1:` ciphertext, and rejects malformed, unsupported-version, or unauthenticated ciphertext without returning plaintext.

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from keysec import KeySec
-from keysec.model.errors import ConfigurationError, SecretRetrievalError
+from keysec.model.errors import ConfigurationError, CryptoError, SecretRetrievalError
 from keysec.model import KeySec as ModelKeySec
 from keysec.providers.crypto.crypto_provider import CryptoProvider
 from keysec.providers.crypto.crypto_provider_registry import register_crypto_provider
@@ -39,10 +39,13 @@ class APITestCryptoProvider(CryptoProvider):
         return str(key_file or self.settings.get("key_file", "default"))
 
     def encrypt(self, plaintext: str, key_file: str | Path | None = None) -> str:
-        return f"{self.name}:{self._key_file(key_file)}:{plaintext}"
+        ciphertext = f"{self.name}:{self._key_file(key_file)}:{plaintext}"
+        return self.wrap_ciphertext(ciphertext)
 
     def decrypt(self, ciphertext: str, key_file: str | Path | None = None) -> str:
-        return f"{self.name}:{self._key_file(key_file)}:{ciphertext}"
+        ciphertext = self.unwrap_ciphertext(ciphertext)
+        prefix = f"{self.name}:{self._key_file(key_file)}:"
+        return ciphertext.removeprefix(prefix)
 
     def generate_key(self, output_path: str | Path | None = None) -> str:
         return str(output_path or self.settings.get("key_file", "provider-key"))
@@ -73,10 +76,16 @@ keysec:
         type: api-test-echo
       alternate:
         type: api-test-echo
+        settings:
+          secret_prefix: ALT
       failing:
         type: api-test-fail
       backup:
         type: api-test-echo
+      invalidprefix:
+        type: api-test-echo
+        settings:
+          secret_prefix: 12
   crypto:
     default: main
     providers:
@@ -88,6 +97,7 @@ keysec:
         type: api-test-crypto
         settings:
           key_file: alternate.key
+          cipher_prefix: LOCKED
 """,
             encoding="utf-8",
         )
@@ -103,10 +113,23 @@ keysec:
 
     def test_get_secret_uses_default_and_named_provider(self) -> None:
         self.assertEqual(self.keysec.get_secret("db-password"), "primary:db-password")
+        self.assertEqual(self.keysec.get_secret("KEY(db-password)"), "primary:db-password")
         self.assertEqual(
             self.keysec.get_secret("db-password", provider="alternate"),
             "alternate:db-password",
         )
+        self.assertEqual(
+            self.keysec.get_secret("ALT(db-password)", provider="alternate"),
+            "alternate:db-password",
+        )
+
+    def test_get_secret_rejects_invalid_prefix_configuration(self) -> None:
+        with self.assertRaisesRegex(ConfigurationError, "secret_prefix"):
+            self.keysec.get_secret("KEY(db-password)", provider="invalidprefix")
+
+    def test_get_secret_rejects_empty_wrapped_secret_name(self) -> None:
+        with self.assertRaisesRegex(ValueError, "inside wrapper"):
+            self.keysec.get_secret("KEY()")
 
     def test_get_secret_rejects_unknown_provider(self) -> None:
         with self.assertRaisesRegex(ConfigurationError, "not configured"):
@@ -140,6 +163,150 @@ keysec:
 
         self.assertIsInstance(service, APIEchoServiceProvider)
         self.assertIsInstance(crypto, APITestCryptoProvider)
+
+    def test_selected_providers_use_their_configured_prefixes(self) -> None:
+        secret = self.keysec.get_secret("ALT(database-password)", provider="alternate")
+        crypto = self.keysec.get_provider("alternate", provider_type="crypto")
+        ciphertext = crypto.encrypt("integration payload")
+
+        self.assertEqual(secret, "alternate:database-password")
+        self.assertEqual(crypto.cipher_prefix, "LOCKED")
+        self.assertTrue(ciphertext.startswith("LOCKED("))
+        self.assertEqual(crypto.decrypt(ciphertext), "integration payload")
+
+    def test_resolves_wrapped_crypto_and_service_provider_settings(self) -> None:
+        bootstrap_crypto = APITestCryptoProvider(
+            "main",
+            {"key_file": "bootstrap.key", "cipher_prefix": "CRYPTO"},
+        )
+        crypto_ciphertext = bootstrap_crypto.encrypt("crypto-setting")
+        crypto_value = (
+            "SECONDARY("
+            + bootstrap_crypto.unwrap_ciphertext(crypto_ciphertext)
+            + ")"
+        )
+        service_value = "VAULT(main:bootstrap.key:service-setting)"
+        nested_value = "VAULT(main:bootstrap.key:nested-setting)"
+        config_path = Path(self.temp_dir.name) / "encrypted-settings.yaml"
+        config_path.write_text(
+            f"""
+keysec:
+  services:
+    default: vault
+    cipher_prefix: SERVICE
+    providers:
+      vault:
+        type: api-test-echo
+        settings:
+          cipher_prefix: VAULT
+          endpoint_token: {service_value}
+          labels:
+            - {nested_value}
+            - plain-label
+  crypto:
+    default: main
+    cipher_prefix: CRYPTO
+    providers:
+      main:
+        type: api-test-crypto
+        settings:
+          key_file: bootstrap.key
+      secondary:
+        type: api-test-crypto
+        settings:
+          cipher_prefix: SECONDARY
+          key_file: {crypto_value}
+          unwrapped: unchanged
+""",
+            encoding="utf-8",
+        )
+
+        with patch.dict("os.environ", {"KEYSEC_CONFIG": str(config_path)}):
+            keysec = KeySec()
+            service = keysec.get_provider("vault", provider_type="service")
+            crypto = keysec.get_provider("secondary", provider_type="crypto")
+            bootstrap = keysec.get_provider("main", provider_type="crypto")
+
+        self.assertEqual(service.settings["endpoint_token"], "service-setting")
+        self.assertEqual(service.settings["labels"], ["nested-setting", "plain-label"])
+        self.assertEqual(crypto.settings["key_file"], "crypto-setting")
+        self.assertEqual(crypto.settings["unwrapped"], "unchanged")
+        self.assertEqual(bootstrap.settings["key_file"], "bootstrap.key")
+
+    def test_wrapped_provider_setting_requires_default_crypto_provider(self) -> None:
+        config_path = Path(self.temp_dir.name) / "no-default-crypto.yaml"
+        config_path.write_text(
+            """
+keysec:
+  services:
+    providers:
+      vault:
+        type: api-test-echo
+        settings:
+          token: ENC(ciphertext)
+  crypto:
+    providers:
+      local:
+        type: api-test-crypto
+""",
+            encoding="utf-8",
+        )
+
+        with patch.dict("os.environ", {"KEYSEC_CONFIG": str(config_path)}):
+            with self.assertRaisesRegex(ConfigurationError, "no default"):
+                KeySec()
+
+    def test_malformed_wrapped_provider_setting_fails_explicitly(self) -> None:
+        config_path = Path(self.temp_dir.name) / "malformed-encrypted-settings.yaml"
+        config_path.write_text(
+            """
+keysec:
+  services:
+    providers:
+      vault:
+        type: api-test-echo
+        settings:
+          token: ENC(ciphertext
+  crypto:
+    default: main
+    providers:
+      main:
+        type: api-test-crypto
+""",
+            encoding="utf-8",
+        )
+
+        with patch.dict("os.environ", {"KEYSEC_CONFIG": str(config_path)}):
+            with self.assertRaisesRegex(ConfigurationError, "malformed"):
+                KeySec()
+
+    def test_invalid_wrapped_ciphertext_fails_without_fallback(self) -> None:
+        key_file = Path(self.temp_dir.name) / "bootstrap.key"
+        key_file.write_bytes(bytes(range(32)))
+        config_path = Path(self.temp_dir.name) / "invalid-ciphertext.yaml"
+        config_path.write_text(
+            f"""
+keysec:
+  services:
+    providers:
+      vault:
+        type: api-test-echo
+        settings:
+          token: ENC(ks1:AA)
+  crypto:
+    default: main
+    providers:
+      main:
+        type: aes-gcm
+        settings:
+          key_file: {key_file}
+""",
+            encoding="utf-8",
+        )
+
+        with patch.dict("os.environ", {"KEYSEC_CONFIG": str(config_path)}):
+            with self.assertRaises(CryptoError):
+                KeySec()
 
     def test_get_provider_rejects_ambiguous_name(self) -> None:
         with self.assertRaisesRegex(ConfigurationError, "ambiguous"):
@@ -221,6 +388,121 @@ keysec:
         client.get_secret.assert_called_once_with("database-password")
         client.close.assert_called_once()
         credential.close.assert_called_once()
+
+    def test_facade_uses_decrypted_azure_client_secret_directly(self) -> None:
+        bootstrap_crypto = APITestCryptoProvider(
+            "main",
+            {"key_file": "bootstrap.key", "cipher_prefix": "ENC"},
+        )
+        encrypted_secret = bootstrap_crypto.encrypt("private-client-secret")
+        config_path = Path(self.temp_dir.name) / "encrypted-azure.yaml"
+        config_path.write_text(
+            f"""
+keysec:
+  services:
+    default: vault
+    cipher_prefix: ENC
+    providers:
+      vault:
+        type: api-test-azure
+        settings:
+          vault_url: https://example.vault.azure.net/
+          tenant_id: tenant-id
+          client_id: client-id
+          client_secret: {encrypted_secret}
+  crypto:
+    default: main
+    providers:
+      main:
+        type: api-test-crypto
+        settings:
+          key_file: bootstrap.key
+""",
+            encoding="utf-8",
+        )
+        credential = MagicMock()
+        client = MagicMock()
+        client.get_secret.return_value = SimpleNamespace(value="integration-secret")
+
+        with patch.dict(
+            "os.environ",
+            {
+                "KEYSEC_CONFIG": str(config_path),
+                "main:bootstrap.key:private-client-secret": "must-not-be-used",
+            },
+        ):
+            with patch(
+                "keysec.providers.service.azure_key_vault.ClientSecretCredential",
+                return_value=credential,
+            ) as credential_factory:
+                with patch(
+                    "keysec.providers.service.azure_key_vault.SecretClient",
+                    return_value=client,
+                ):
+                    keysec = KeySec()
+                    result = keysec.get_secret("KEY(database-password)")
+
+        self.assertEqual(result, "integration-secret")
+        credential_factory.assert_called_once_with(
+            tenant_id="tenant-id",
+            client_id="client-id",
+            client_secret="private-client-secret",
+        )
+        client.get_secret.assert_called_once_with("database-password")
+
+    def test_facade_uses_environment_expanded_azure_client_secret_directly(self) -> None:
+        config_path = Path(self.temp_dir.name) / "expanded-azure.yaml"
+        config_path.write_text(
+            """
+keysec:
+  services:
+    default: vault
+    providers:
+      vault:
+        type: api-test-azure
+        settings:
+          vault_url: https://example.vault.azure.net/
+          tenant_id: tenant-id
+          client_id: client-id
+          client_secret: ${SEC_VAR}
+""",
+            encoding="utf-8",
+        )
+        credential = MagicMock()
+        client = MagicMock()
+        client.get_secret.return_value = SimpleNamespace(value="integration-secret")
+
+        with patch.dict(
+            "os.environ",
+            {
+                "KEYSEC_CONFIG": str(config_path),
+                "SEC_VAR": "private-client-secret",
+            },
+            clear=True,
+        ):
+            keysec = KeySec()
+            with patch.dict(
+                "os.environ",
+                {"KEYSEC_CONFIG": str(config_path)},
+                clear=True,
+            ):
+                with patch(
+                    "keysec.providers.service.azure_key_vault.ClientSecretCredential",
+                    return_value=credential,
+                ) as credential_factory:
+                    with patch(
+                        "keysec.providers.service.azure_key_vault.SecretClient",
+                        return_value=client,
+                    ):
+                        result = keysec.get_secret("database-password")
+
+        self.assertEqual(result, "integration-secret")
+        credential_factory.assert_called_once_with(
+            tenant_id="tenant-id",
+            client_id="client-id",
+            client_secret="private-client-secret",
+        )
+        client.get_secret.assert_called_once_with("database-password")
 
 
 if __name__ == "__main__":

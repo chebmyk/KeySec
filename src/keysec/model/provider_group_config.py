@@ -13,6 +13,7 @@ class ProviderGroupConfig:
 
     default: str | None
     providers: Mapping[str, ProviderConfig]
+    cipher_prefix: str = "ENC"
 
     def select(self, name: str | None) -> ProviderConfig:
         selected_name = name if name is not None else self.default

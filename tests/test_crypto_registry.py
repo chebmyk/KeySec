@@ -16,9 +16,10 @@ from keysec.providers.crypto.crypto_provider_registry import (
 
 class TestTextCryptoProvider(CryptoProvider):
     def encrypt(self, plaintext: str, key_file: str | Path | None = None) -> str:
-        return f"encrypted:{self.name}:{plaintext}"
+        return self.wrap_ciphertext(f"encrypted:{self.name}:{plaintext}")
 
     def decrypt(self, ciphertext: str, key_file: str | Path | None = None) -> str:
+        ciphertext = self.unwrap_ciphertext(ciphertext)
         return ciphertext.removeprefix(f"encrypted:{self.name}:")
 
     def generate_key(self, output_path: str | Path | None = None) -> str:
@@ -40,8 +41,9 @@ class CryptoRegistryTests(unittest.TestCase):
         provider = registry.create(group.select("alternate"))
 
         self.assertEqual(provider.name, "alternate")
-        self.assertEqual(provider.encrypt("data"), "encrypted:alternate:data")
-        self.assertEqual(provider.decrypt("encrypted:alternate:data"), "data")
+        ciphertext = provider.encrypt("data")
+        self.assertEqual(ciphertext, "ENC(encrypted:alternate:data)")
+        self.assertEqual(provider.decrypt(ciphertext), "data")
 
     def test_uses_configured_default_provider(self) -> None:
         group = ProviderGroupConfig(
@@ -69,7 +71,7 @@ class CryptoRegistryTests(unittest.TestCase):
 
         provider = crypto_provider_registry.create(config)
 
-        self.assertEqual(provider.encrypt("data"), "encrypted:custom:data")
+        self.assertEqual(provider.encrypt("data"), "ENC(encrypted:custom:data)")
 
 
 if __name__ == "__main__":

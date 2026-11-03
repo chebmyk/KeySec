@@ -19,6 +19,7 @@ from keysec.model.errors import (
     SecretNotFoundError,
     SecretRetrievalError,
 )
+from keysec.model.provider_config import DecryptedConfigValue, EnvironmentConfigValue
 from keysec.providers.service.service_provider import ServiceProvider
 
 
@@ -127,7 +128,9 @@ class AzureKeyVaultProvider(ServiceProvider):
                 "Azure service-principal settings require 'client_secret' "
                 "(an environment variable name) or 'certificate_path'"
             )
-        if not os.environ.get(client_secret):
+        if not isinstance(
+            client_secret, (DecryptedConfigValue, EnvironmentConfigValue)
+        ) and not os.environ.get(client_secret):
             raise ConfigurationError(
                 f"Azure Key Vault client-secret environment variable "
                 f"'{client_secret}' is not set"
@@ -154,11 +157,16 @@ class AzureKeyVaultProvider(ServiceProvider):
             )
 
         if "client_secret" in self._service_principal:
-            client_secret = os.environ.get(self._service_principal["client_secret"])
+            configured_secret = self._service_principal["client_secret"]
+            if isinstance(
+                configured_secret, (DecryptedConfigValue, EnvironmentConfigValue)
+            ):
+                client_secret = str(configured_secret)
+            else:
+                client_secret = os.environ.get(configured_secret)
             if not client_secret:
                 raise ConfigurationError(
-                    f"Azure Key Vault client-secret environment variable "
-                    f"'{self._service_principal['client_secret']}' is not set"
+                    "Azure Key Vault client-secret value is unavailable"
                 )
             return ClientSecretCredential(
                 tenant_id=tenant_id,

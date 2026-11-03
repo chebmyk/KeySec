@@ -16,6 +16,7 @@ from keysec.model.errors import (
     SecretNotFoundError,
     SecretRetrievalError,
 )
+from keysec.model.provider_config import DecryptedConfigValue, EnvironmentConfigValue
 from keysec.providers.service.azure_key_vault import AzureKeyVaultProvider
 
 
@@ -110,6 +111,52 @@ class AzureKeyVaultProviderTests(unittest.TestCase):
         )
         self.client.close.assert_called_once()
         self.credential.close.assert_called_once()
+
+    def test_authenticates_with_environment_expanded_client_secret(self) -> None:
+        settings = {
+            "vault_url": "https://example.vault.azure.net/",
+            "tenant_id": "tenant-id",
+            "client_id": "client-id",
+            "client_secret": EnvironmentConfigValue("private-value"),
+        }
+        self.client.get_secret.return_value = SimpleNamespace(value="secret-value")
+
+        with patch.dict(os.environ, {}, clear=True):
+            provider = AzureKeyVaultProvider("vault", settings)
+            with patch(
+                "keysec.providers.service.azure_key_vault.ClientSecretCredential",
+                return_value=self.credential,
+            ) as credential_factory:
+                self.assertEqual(provider.get_secret("database-password"), "secret-value")
+
+        credential_factory.assert_called_once_with(
+            tenant_id="tenant-id",
+            client_id="client-id",
+            client_secret="private-value",
+        )
+
+    def test_authenticates_with_decrypted_client_secret_directly(self) -> None:
+        settings = {
+            "vault_url": "https://example.vault.azure.net/",
+            "tenant_id": "tenant-id",
+            "client_id": "client-id",
+            "client_secret": DecryptedConfigValue("private-value"),
+        }
+        self.client.get_secret.return_value = SimpleNamespace(value="secret-value")
+
+        with patch.dict(os.environ, {}, clear=True):
+            provider = AzureKeyVaultProvider("vault", settings)
+            with patch(
+                "keysec.providers.service.azure_key_vault.ClientSecretCredential",
+                return_value=self.credential,
+            ) as credential_factory:
+                self.assertEqual(provider.get_secret("database-password"), "secret-value")
+
+        credential_factory.assert_called_once_with(
+            tenant_id="tenant-id",
+            client_id="client-id",
+            client_secret="private-value",
+        )
 
     def test_authenticates_service_principal_with_local_certificate(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

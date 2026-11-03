@@ -29,11 +29,12 @@ class AESGCMProvider(CryptoProvider):
         nonce = os.urandom(_NONCE_LENGTH)
         encrypted = AESGCM(key).encrypt(nonce, plaintext.encode("utf-8"), None)
         encoded = base64.urlsafe_b64encode(nonce + encrypted).rstrip(b"=").decode("ascii")
-        return f"{_CIPHERTEXT_PREFIX}{encoded}"
+        return self.wrap_ciphertext(f"{_CIPHERTEXT_PREFIX}{encoded}")
 
     def decrypt(self, ciphertext: str, key_file: str | Path | None = None) -> str:
         if not isinstance(ciphertext, str):
             raise TypeError("Ciphertext must be a string")
+        ciphertext = self.unwrap_ciphertext(ciphertext)
         if not ciphertext.startswith(_CIPHERTEXT_PREFIX):
             raise CryptoError("Ciphertext format is unsupported or malformed")
 

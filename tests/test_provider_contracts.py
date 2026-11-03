@@ -18,10 +18,10 @@ class TestServiceProvider(ServiceProvider):
 
 class TestCryptoProvider(CryptoProvider):
     def encrypt(self, plaintext: str, key_file: str | Path | None = None) -> str:
-        return plaintext
+        return self.wrap_ciphertext(plaintext)
 
     def decrypt(self, ciphertext: str, key_file: str | Path | None = None) -> str:
-        return ciphertext
+        return self.unwrap_ciphertext(ciphertext)
 
     def generate_key(self, output_path: str | Path | None = None) -> str:
         return str(output_path or "test.key")
@@ -57,8 +57,9 @@ class ProviderContractTests(unittest.TestCase):
         crypto = TestCryptoProvider("test-crypto", {})
 
         self.assertEqual(service.get_secret("item"), "value:item")
-        self.assertEqual(crypto.encrypt("text"), "text")
-        self.assertEqual(crypto.decrypt("text"), "text")
+        ciphertext = crypto.encrypt("text")
+        self.assertEqual(ciphertext, "ENC(text)")
+        self.assertEqual(crypto.decrypt(ciphertext), "text")
 
 
 if __name__ == "__main__":

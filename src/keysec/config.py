@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 from types import MappingProxyType
 from typing import Any
 
@@ -11,8 +12,10 @@ import yaml
 
 from keysec.model.errors import ConfigurationError
 from keysec.model.keysec_config import KeySecConfig
-from keysec.model.provider_config import ProviderConfig
+from keysec.model.provider_config import EnvironmentConfigValue, ProviderConfig
 from keysec.model.provider_group_config import ProviderGroupConfig
+
+_ENVIRONMENT_VARIABLE_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
 def load_config(path: str | Path | None = None) -> KeySecConfig:
@@ -33,6 +36,7 @@ def load_config(path: str | Path | None = None) -> KeySecConfig:
             f"Configuration file is not valid YAML: {config_path}"
         ) from exc
 
+    raw_config = _expand_environment_values(raw_config)
     if not isinstance(raw_config, dict):
         raise ConfigurationError("Configuration document must be a YAML mapping")
     keysec_config = raw_config.get("keysec")
@@ -43,6 +47,29 @@ def load_config(path: str | Path | None = None) -> KeySecConfig:
         services=_parse_group(keysec_config.get("services", {}), "keysec.services"),
         crypto=_parse_group(keysec_config.get("crypto", {}), "keysec.crypto"),
     )
+
+
+def _expand_environment_values(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _expand_environment_values(nested_value)
+            for key, nested_value in value.items()
+        }
+    if isinstance(value, list):
+        return [_expand_environment_values(item) for item in value]
+    if not isinstance(value, str) or not _ENVIRONMENT_VARIABLE_PATTERN.search(value):
+        return value
+
+    def replace(match: re.Match[str]) -> str:
+        name = match.group(1)
+        try:
+            return os.environ[name]
+        except KeyError as exc:
+            raise ConfigurationError(
+                f"Configuration references unset environment variable '{name}'"
+            ) from exc
+
+    return EnvironmentConfigValue(_ENVIRONMENT_VARIABLE_PATTERN.sub(replace, value))
 
 
 def _config_path(path: str | Path | None) -> Path:
@@ -61,6 +88,12 @@ def _config_path(path: str | Path | None) -> Path:
 def _parse_group(raw_group: Any, category: str) -> ProviderGroupConfig:
     if not isinstance(raw_group, dict):
         raise ConfigurationError(f"'{category}' must be a YAML mapping")
+
+    cipher_prefix = raw_group.get("cipher_prefix", "ENC")
+    if not isinstance(cipher_prefix, str) or not cipher_prefix:
+        raise ConfigurationError(
+            f"'{category}.cipher_prefix' must be a non-empty string"
+        )
 
     default = raw_group.get("default")
     if default is not None and (not isinstance(default, str) or not default.strip()):
@@ -96,11 +129,19 @@ def _parse_group(raw_group: Any, category: str) -> ProviderGroupConfig:
             raise ConfigurationError(
                 f"'{category}.providers.{name}.settings' keys must be strings"
             )
+        provider_cipher_prefix = settings.get("cipher_prefix", cipher_prefix)
+        if not isinstance(provider_cipher_prefix, str) or not provider_cipher_prefix:
+            raise ConfigurationError(
+                f"'{category}.providers.{name}.settings.cipher_prefix' "
+                "must be a non-empty string"
+            )
+        resolved_settings = dict(settings)
+        resolved_settings["cipher_prefix"] = provider_cipher_prefix
 
         providers[name] = ProviderConfig(
             name=name,
             type=provider_type,
-            settings=MappingProxyType(dict(settings)),
+            settings=MappingProxyType(resolved_settings),
         )
 
     if default is not None and default not in providers:
@@ -111,4 +152,5 @@ def _parse_group(raw_group: Any, category: str) -> ProviderGroupConfig:
     return ProviderGroupConfig(
         default=default,
         providers=MappingProxyType(providers),
+        cipher_prefix=cipher_prefix,
     )
