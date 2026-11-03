@@ -1,0 +1,158 @@
+# KeySec
+
+KeySec provides configurable service and cryptography providers for Python applications.
+
+## Configuration
+
+KeySec reads the YAML file named by `KEYSEC_CONFIG`; if the environment variable is unset, it looks for `./keysec.yaml`.
+
+The file is rooted at `keysec` and has `services` and `crypto` sections. Each section maps configured provider names to an implementation `type` and provider-specific `settings`, and may declare the default provider name:
+
+```yaml
+keysec:
+  services:
+    default: vault
+    providers:
+      vault:
+        type: azure-key-vault
+        settings:
+          vault_url: https://example.vault.azure.net/
+  crypto:
+    default: local
+    providers:
+      local:
+        type: aes-gcm
+        settings:
+          key_file: ./local.key
+```
+
+Provider names are the values selected by API calls. The `type` identifies the in-process implementation. Do not store raw credentials, encryption keys, or secret values in this file. Azure Key Vault uses the Azure identity available to the process.
+
+## Public API
+
+`KeySec` loads the configuration from `KEYSEC_CONFIG` or `./keysec.yaml`. The `provider` argument selects a configured name from the relevant section; omitting it uses that section's default:
+
+```python
+from keysec import KeySec
+
+keysec = KeySec()
+
+# Retrieve a string secret using keysec.services.default ("vault").
+database_password = keysec.get_secret("database-password")
+
+# Look up a crypto provider and use its crypto operations directly.
+crypto = keysec.get_provider("local", provider_type="crypto")
+key_path = crypto.generate_key()
+ciphertext = crypto.encrypt("Hello, 世界")
+plaintext = crypto.decrypt(ciphertext)
+```
+
+`get_secret` returns a string. `get_provider(name, provider_type=None)` returns an instantiated provider configured by name. `provider_type` may be `"service"` or `"crypto"`; when omitted, the name must exist in only one category, otherwise lookup raises an ambiguity error. Unknown names and categories raise configuration errors. Crypto-provider instances expose `encrypt`, `decrypt`, and `generate_key`; `KeySec` itself does not.
+
+## Azure Key Vault
+
+The built-in `azure-key-vault` service provider requires an HTTPS `vault_url`. If `tenant_id`, `client_id`, `client_secret`, and `certificate_path` are all omitted, it uses Azure's `DefaultAzureCredential` chain; for local development, sign in with the Azure CLI. In deployed environments, use the workload's managed or federated identity. Grant the selected identity permission to read secrets from the configured vault (for example, the Key Vault Secrets User data-plane role when using Azure RBAC).
+
+For service-principal authentication, set `tenant_id`, `client_id`, and either or both credential fields directly under the provider's `settings`. `client_secret` is the name of an environment variable that contains the client-secret value; provision that variable through the deployment platform's protected environment or secret-injection mechanism, not in YAML:
+
+```yaml
+keysec:
+  services:
+    default: vault
+    providers:
+      vault:
+        type: azure-key-vault
+        settings:
+          vault_url: https://example.vault.azure.net/
+          tenant_id: 00000000-0000-0000-0000-000000000000
+          client_id: 11111111-1111-1111-1111-111111111111
+          client_secret: KEYSEC_AZURE_CLIENT_SECRET
+```
+
+Alternatively, set `certificate_path` to an unencrypted local certificate file that includes its private key:
+
+```yaml
+keysec:
+  services:
+    default: vault
+    providers:
+      vault:
+        type: azure-key-vault
+        settings:
+          vault_url: https://example.vault.azure.net/
+          tenant_id: 00000000-0000-0000-0000-000000000000
+          client_id: 11111111-1111-1111-1111-111111111111
+          certificate_path: /run/secrets/keysec-service-principal.pem
+```
+
+If both `client_secret` and `certificate_path` are supplied, the certificate is used and the client-secret environment variable is not read. The certificate may be PEM or PKCS#12 and must contain an RSA private key. The file must be readable by the KeySec process; absolute paths are recommended (relative paths are resolved from the process working directory). Password-protected certificates are not supported. Service-principal settings are validated explicitly; if the selected credential is unavailable, KeySec reports an error instead of falling back to ambient identity.
+
+## Manual Azure connectivity test
+
+The automatic test suite uses mocks and local test doubles; it does not connect to remote services. The one live Azure Key Vault check is in `tests/manual_azure_key_vault_integration.py` and is not included in default test discovery. Configure `KEYSEC_CONFIG` to a YAML file whose default service provider has type `azure-key-vault`, and ensure the current Azure identity can read the secret named by `KEYSEC_TEST_SECRET_NAME`. Run it explicitly from the repository root:
+
+```sh
+KEYSEC_CONFIG=/path/to/keysec.yaml \
+KEYSEC_TEST_SECRET_NAME=connectivity-check \
+python -m unittest discover -s tests -p manual_azure_key_vault_integration.py -v
+```
+
+The test requires both environment variables, verifies that the configured default is Azure Key Vault, and uses the identity mode configured for that provider. Never prints or includes the retrieved secret value in its assertions.
+
+## Adding a service provider
+
+Applications can register service providers in process. Provider implementations receive the configured provider name and its settings:
+
+```python
+from keysec.providers.service import ServiceProvider, register_service_provider
+
+
+class EnvironmentServiceProvider(ServiceProvider):
+    def get_secret(self, secret: str) -> str:
+        # Resolve the secret using the application's chosen service.
+        ...
+
+
+register_service_provider("environment", EnvironmentServiceProvider)
+```
+
+The configuration entry's `type` must match the registration identifier, and callers select the configured entry by its name. Provider implementations should not log secret values or credentials.
+
+## Adding a crypto provider
+
+Crypto providers use the same registration pattern while implementing the separate `CryptoProvider` contract:
+
+```python
+from keysec.providers.crypto import CryptoProvider, register_crypto_provider
+
+
+class CustomCryptoProvider(CryptoProvider):
+    def encrypt(self, plaintext: str, key_file: str | None = None) -> str:
+        ...
+
+    def decrypt(self, ciphertext: str, key_file: str | None = None) -> str:
+        ...
+
+    def generate_key(self, output_path: str | None = None) -> str:
+        ...
+
+
+register_crypto_provider("custom-crypto", CustomCryptoProvider)
+```
+
+Set the crypto provider entry's `type` to `custom-crypto`; callers pass its configured name to `KeySec.get_provider(name, provider_type="crypto")`. The built-in `aes-gcm` type is registered automatically.
+
+## AES-GCM keys and ciphertext
+
+The built-in AES-GCM provider uses AES-256-GCM. Its `key_file` setting names a binary 32-byte key file. Key generation can write to that configured path or to a call-level output path; it fails rather than overwriting an existing file. On POSIX systems the file is created with owner-only read/write permissions. Protect and back up the key file separately from ciphertext.
+
+```python
+from keysec.providers.crypto import AESGCMProvider
+
+provider = AESGCMProvider("local", {"key_file": "./local.key"})
+key_path = provider.generate_key()
+ciphertext = provider.encrypt("Hello, 世界")
+plaintext = provider.decrypt(ciphertext)
+```
+
+Ciphertext is a string in the versioned `ks1:` format. Its URL-safe Base64 payload contains the 12-byte nonce followed by AES-GCM ciphertext and its 16-byte authentication tag. The nonce is freshly generated for each encryption. UTF-8 is used for text input and output. Decryption rejects malformed, unsupported-version, or unauthenticated ciphertext without returning plaintext.

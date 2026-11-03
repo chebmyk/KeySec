@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Build and test artifacts
+build/
+dist/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local configuration and key material
+.env
+.env.*
+keysec.yaml
+*.key
+
+# macOS
+.DS_Store

@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "keysec"
+version = "0.1.0"
+description = "Extensible secret retrieval and text cryptography for Python applications"
+requires-python = ">=3.10"
+dependencies = [
+    "PyYAML>=6.0",
+    "azure-identity>=1.15",
+    "azure-keyvault-secrets>=4.7",
+    "cryptography>=41.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
