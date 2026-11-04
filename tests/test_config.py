@@ -195,6 +195,43 @@ keysec:
 
         self.assertIn("local", config.services.providers)
 
+    def test_audit_logging_defaults_to_disabled_and_default_file(self) -> None:
+        path = self.write_config("keysec: {}\n")
+
+        audit_logging = load_config(path).audit_logging
+
+        self.assertFalse(audit_logging.enabled)
+        self.assertEqual(audit_logging.file, "./audit.log")
+
+    def test_loads_audit_logging_settings_and_expands_file_environment_value(
+        self,
+    ) -> None:
+        path = self.write_config(
+            "keysec:\n"
+            "  audit_logging:\n"
+            "    enabled: true\n"
+            "    file: ${AUDIT_LOG_PATH}\n"
+        )
+
+        with patch.dict(os.environ, {"AUDIT_LOG_PATH": "/var/log/keysec/audit.log"}):
+            audit_logging = load_config(path).audit_logging
+
+        self.assertTrue(audit_logging.enabled)
+        self.assertEqual(audit_logging.file, "/var/log/keysec/audit.log")
+
+    def test_rejects_invalid_audit_logging_settings(self) -> None:
+        invalid_configs = (
+            "keysec:\n  audit_logging: true\n",
+            'keysec:\n  audit_logging:\n    enabled: "yes"\n',
+            "keysec:\n  audit_logging:\n    file: ''\n",
+            "keysec:\n  audit_logging:\n    file: 12\n",
+        )
+        for content in invalid_configs:
+            with self.subTest(content=content):
+                path = self.write_config(content)
+                with self.assertRaises(ConfigurationError):
+                    load_config(path)
+
     def test_uses_keysec_yaml_in_current_directory_by_default(self) -> None:
         path = self.write_config(
             "keysec:\n  services:\n    providers:\n      local:\n        type: test\n"

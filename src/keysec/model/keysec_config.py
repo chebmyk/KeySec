@@ -1,8 +1,16 @@
-"""Model for the validated KeySec configuration."""
+"""Models for the validated KeySec configuration."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from keysec.model.provider_group_config import ProviderGroupConfig
+
+
+@dataclass(frozen=True)
+class AuditLoggingConfig:
+    """Validated audit logging settings."""
+
+    enabled: bool = False
+    file: str = "./audit.log"
 
 
 @dataclass(frozen=True)
@@ -11,3 +19,4 @@ class KeySecConfig:
 
     services: ProviderGroupConfig
     crypto: ProviderGroupConfig
+    audit_logging: AuditLoggingConfig = field(default_factory=AuditLoggingConfig)

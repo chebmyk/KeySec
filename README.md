@@ -12,6 +12,9 @@ The file is rooted at `keysec` and has `services` and `crypto` sections. Each se
 
 ```yaml
 keysec:
+  audit_logging:
+    enabled: true
+    file: ./audit.log
   services:
     default: vault
     providers:
@@ -43,6 +46,8 @@ keysec:
         settings:
           client_secret: ${SEC_VAR}
 ```
+
+Audit logging is disabled by default. To enable it, set `keysec.audit_logging.enabled` to `true` and optionally choose a log file path; the path also supports environment-variable expansion. Audit entries cover secret retrieval and crypto operations, recording operation, provider, timestamp, and outcome only. Secret names and values, plaintext, ciphertext, key material, and exception text are excluded. The file rotates daily. If an audit write fails, KeySec reports the logging failure through standard Python logging and continues the operation.
 
 ## Public API
 

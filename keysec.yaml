@@ -1,4 +1,9 @@
 keysec:
+  # Optional audit logging. Enable explicitly to create the daily audit log.
+  # audit_logging:
+  #   enabled: true
+  #   file: ./audit.log
+
   crypto:
     default: local
     providers:

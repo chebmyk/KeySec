@@ -150,6 +150,7 @@ def _format_available_providers() -> str:
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the KeySec command-line interface."""
     args = _build_parser().parse_args(argv)
+    keysec: KeySec | None = None
     try:
         if args.command == "list-available-providers":
             result = _format_available_providers()
@@ -173,6 +174,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (KeySecError, ValueError, OSError) as exc:
         print(f"keysec: {exc}", file=sys.stderr)
         return 1
+    finally:
+        if keysec is not None:
+            keysec.close()
 
     print(result)
     return 0

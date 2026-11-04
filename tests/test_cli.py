@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import tempfile
 import unittest
@@ -263,6 +264,60 @@ class KeySecCLITests(unittest.TestCase):
 
         self.assertEqual(plaintext, "round trip\n")
         self.assertEqual(stderr, "")
+
+    def test_audit_logging_records_cli_crypto_outcomes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir)
+            audit_path = directory / "audit.log"
+            key_path = directory / "local.key"
+            config_path = directory / "keysec.yaml"
+            config_path.write_text(
+                "keysec:\n"
+                "  audit_logging:\n"
+                "    enabled: true\n"
+                f"    file: {audit_path}\n"
+                "  crypto:\n"
+                "    default: local\n"
+                "    providers:\n"
+                "      local:\n"
+                "        type: aes-gcm\n"
+                "        settings:\n"
+                f"          key_file: {key_path}\n",
+                encoding="utf-8",
+            )
+            plaintext = "AUDIT_CLI_PLAINTEXT_MARKER"
+            with patch.dict(os.environ, {"KEYSEC_CONFIG": str(config_path)}):
+                generate_status, _, _ = self.run_cli(["generate-key"])
+                encrypt_status, ciphertext, _ = self.run_cli(
+                    ["encrypt", plaintext]
+                )
+                decrypt_status, decrypted, _ = self.run_cli(
+                    ["decrypt", ciphertext.strip()]
+                )
+                failure_status, _, failure_stderr = self.run_cli(
+                    ["decrypt", "invalid-ciphertext"]
+                )
+
+            self.assertEqual(
+                (generate_status, encrypt_status, decrypt_status, failure_status),
+                (0, 0, 0, 1),
+            )
+            self.assertEqual(decrypted, f"{plaintext}\n")
+            self.assertNotEqual(failure_stderr, "")
+            contents = audit_path.read_text(encoding="utf-8")
+            self.assertNotIn(plaintext, contents)
+            self.assertNotIn(ciphertext.strip(), contents)
+            entries = [json.loads(line) for line in contents.splitlines()]
+            self.assertEqual(
+                [(entry["operation"], entry["outcome"]) for entry in entries],
+                [
+                    ("key_generation", "success"),
+                    ("encrypt", "success"),
+                    ("decrypt", "success"),
+                    ("decrypt", "failure"),
+                ],
+            )
+            self.assertTrue(all(entry["provider"] == "local" for entry in entries))
 
     def test_list_providers_shows_only_provider_metadata(self) -> None:
         config = SimpleNamespace(

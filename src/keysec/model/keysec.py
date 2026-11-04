@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import inspect
 from types import MappingProxyType
 from typing import Any, Callable
 
+from keysec.audit import audit, create_audit_logger
 from keysec.config import load_config
 from keysec.model.errors import ConfigurationError
 from keysec.model.keysec_config import KeySecConfig
@@ -15,6 +17,27 @@ from keysec.providers.crypto.crypto_provider import CryptoProvider
 from keysec.providers.crypto.crypto_provider_registry import crypto_provider_registry
 from keysec.providers.provider import Provider
 from keysec.providers.service.service_provider_registry import service_provider_registry
+
+
+def _service_provider_identity(
+    signature: inspect.Signature,
+    *args: Any,
+    **kwargs: Any,
+) -> str | None:
+    try:
+        bound_arguments = signature.bind_partial(*args, **kwargs).arguments
+    except TypeError:
+        return None
+
+    instance = bound_arguments.get("self")
+    provider = bound_arguments.get("provider")
+    if isinstance(provider, str):
+        return provider
+    if provider is not None:
+        return None
+    if instance is None:
+        return None
+    return instance._config.services.default
 
 
 def _resolve_group_settings(
@@ -81,6 +104,7 @@ class KeySec:
 
     def __init__(self) -> None:
         config = load_config()
+        self._audit_logger = create_audit_logger(config.audit_logging)
         decryptor: CryptoProvider | None = None
 
         def decrypt(ciphertext: str) -> str:
@@ -105,6 +129,12 @@ class KeySec:
             ),
         )
 
+    def close(self) -> None:
+        """Close resources used by this KeySec instance."""
+        if self._audit_logger is not None:
+            self._audit_logger.close()
+
+    @audit("secret_retrieval", provider_resolver=_service_provider_identity)
     def get_secret(self, secret: str, provider: str | None = None) -> str:
         """Retrieve a secret value as a string."""
         if not isinstance(secret, str) or not secret:
@@ -117,6 +147,11 @@ class KeySec:
             if not secret:
                 raise ValueError("Secret name inside wrapper must be non-empty")
         return service.get_secret(secret)
+
+    def _create_crypto_provider(self, config: ProviderConfig) -> CryptoProvider:
+        provider = crypto_provider_registry.create(config)
+        provider._audit_logger = self._audit_logger
+        return provider
 
     def get_provider(
         self,
@@ -140,13 +175,13 @@ class KeySec:
             return service_provider_registry.create(service_config)
         if provider_type == "crypto":
             if name is None:
-                return crypto_provider_registry.create(
+                return self._create_crypto_provider(
                     self._config.crypto.select(None)
                 )
             crypto_config = self._config.crypto.providers.get(name)
             if crypto_config is None:
                 raise ConfigurationError(f"Crypto provider '{name}' is not configured")
-            return crypto_provider_registry.create(crypto_config)
+            return self._create_crypto_provider(crypto_config)
         if name is None:
             raise ConfigurationError(
                 "Provider type must be specified when selecting a default provider"
@@ -162,5 +197,5 @@ class KeySec:
         if service_config is not None:
             return service_provider_registry.create(service_config)
         if crypto_config is not None:
-            return crypto_provider_registry.create(crypto_config)
+            return self._create_crypto_provider(crypto_config)
         raise ConfigurationError(f"Provider '{name}' is not configured")

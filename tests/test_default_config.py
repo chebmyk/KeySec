@@ -28,6 +28,8 @@ class DefaultConfigTests(unittest.TestCase):
             config.crypto.select(None).settings["key_file"],
             "./keysec.key",
         )
+        self.assertFalse(config.audit_logging.enabled)
+        self.assertEqual(config.audit_logging.file, "./audit.log")
 
     def test_default_configuration_contains_no_credentials_or_key_material(self) -> None:
         contents = (REPOSITORY_ROOT / "keysec.yaml").read_text(encoding="utf-8")
@@ -42,6 +44,7 @@ class DefaultConfigTests(unittest.TestCase):
         )
         self.assertIn("# services:", contents)
         self.assertIn("#   default: vault", contents)
+        self.assertIn("# audit_logging:", contents)
 
 
 if __name__ == "__main__":

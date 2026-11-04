@@ -11,6 +11,7 @@ import secrets
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from keysec.audit import audit
 from keysec.model.errors import CryptoError
 from keysec.providers.crypto.crypto_provider import CryptoProvider
 
@@ -21,6 +22,7 @@ _KEY_LENGTH = 32
 class AESGCMProvider(CryptoProvider):
     """Encrypts UTF-8 text with AES-256-GCM."""
 
+    @audit("encrypt")
     def encrypt(self, plaintext: str, key_file: str | Path | None = None) -> str:
         if not isinstance(plaintext, str):
             raise TypeError("Plaintext must be a string")
@@ -30,6 +32,7 @@ class AESGCMProvider(CryptoProvider):
         encoded = base64.urlsafe_b64encode(nonce + encrypted).rstrip(b"=").decode("ascii")
         return self.wrap_ciphertext(encoded)
 
+    @audit("decrypt")
     def decrypt(self, ciphertext: str, key_file: str | Path | None = None) -> str:
         if not isinstance(ciphertext, str):
             raise TypeError("Ciphertext must be a string")
@@ -57,6 +60,7 @@ class AESGCMProvider(CryptoProvider):
         except UnicodeDecodeError as exc:
             raise CryptoError("Decrypted value is not valid UTF-8 text") from exc
 
+    @audit("key_generation")
     def generate_key(self, output_path: str | Path | None = None) -> str:
         configured_path = (
             output_path if output_path is not None else self.settings.get("key_file")

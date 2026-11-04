@@ -11,7 +11,7 @@ from typing import Any
 import yaml
 
 from keysec.model.errors import ConfigurationError
-from keysec.model.keysec_config import KeySecConfig
+from keysec.model.keysec_config import AuditLoggingConfig, KeySecConfig
 from keysec.model.provider_config import EnvironmentConfigValue, ProviderConfig
 from keysec.model.provider_group_config import ProviderGroupConfig
 
@@ -46,7 +46,24 @@ def load_config(path: str | Path | None = None) -> KeySecConfig:
     return KeySecConfig(
         services=_parse_group(keysec_config.get("services", {}), "keysec.services"),
         crypto=_parse_group(keysec_config.get("crypto", {}), "keysec.crypto"),
+        audit_logging=_parse_audit_logging(keysec_config.get("audit_logging", {})),
     )
+
+
+def _parse_audit_logging(raw_config: Any) -> AuditLoggingConfig:
+    category = "keysec.audit_logging"
+    if not isinstance(raw_config, dict):
+        raise ConfigurationError(f"'{category}' must be a YAML mapping")
+
+    enabled = raw_config.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ConfigurationError(f"'{category}.enabled' must be a boolean")
+
+    file_path = raw_config.get("file", "./audit.log")
+    if not isinstance(file_path, str) or not file_path.strip():
+        raise ConfigurationError(f"'{category}.file' must be a non-empty string")
+
+    return AuditLoggingConfig(enabled=enabled, file=file_path)
 
 
 def _expand_environment_values(value: Any) -> Any:

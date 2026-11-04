@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import inspect
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,8 +11,8 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from keysec import KeySec
-from keysec.model.errors import ConfigurationError, CryptoError, SecretRetrievalError
 from keysec.model import KeySec as ModelKeySec
+from keysec.model.errors import ConfigurationError, CryptoError, SecretRetrievalError
 from keysec.providers.crypto.crypto_provider import CryptoProvider
 from keysec.providers.crypto.crypto_provider_registry import register_crypto_provider
 from keysec.providers.service.azure_key_vault import AzureKeyVaultProvider
@@ -292,7 +294,7 @@ keysec:
       vault:
         type: api-test-echo
         settings:
-          token: ENC(ks1:AA)
+          token: ENC(AAFEFEWRWR)
   crypto:
     default: main
     providers:
@@ -503,6 +505,87 @@ keysec:
             client_secret="private-client-secret",
         )
         client.get_secret.assert_called_once_with("database-password")
+
+    def test_audit_logging_records_supported_operations_without_payloads(self) -> None:
+        audit_path = Path(self.temp_dir.name) / "audit.log"
+        config_path = Path(self.temp_dir.name) / "audit-enabled.yaml"
+        config_path.write_text(
+            f"""
+keysec:
+  audit_logging:
+    enabled: true
+    file: {audit_path}
+  services:
+    default: primary
+    providers:
+      primary:
+        type: api-test-echo
+      failing:
+        type: api-test-fail
+  crypto:
+    default: main
+    providers:
+      main:
+        type: api-test-crypto
+        settings:
+          key_file: configured.key
+""",
+            encoding="utf-8",
+        )
+
+        with patch.dict("os.environ", {"KEYSEC_CONFIG": str(config_path)}):
+            keysec = KeySec()
+            self.assertIsNotNone(keysec._audit_logger)
+            assert keysec._audit_logger is not None
+            self.addCleanup(keysec._audit_logger.close)
+
+            secret_name = "AUDIT_SECRET_NAME_MARKER"
+            secret_value = keysec.get_secret(secret_name)
+            crypto = keysec.get_provider("main", provider_type="crypto")
+            self.assertIsInstance(crypto, APITestCryptoProvider)
+            self.assertEqual(
+                inspect.signature(crypto.encrypt),
+                inspect.signature(
+                    APITestCryptoProvider.encrypt.__get__(crypto, type(crypto))
+                ),
+            )
+            plaintext = "AUDIT_PLAINTEXT_MARKER"
+            ciphertext = crypto.encrypt(plaintext)
+            self.assertEqual(crypto.decrypt(ciphertext), plaintext)
+            crypto.generate_key()
+
+            with self.assertRaisesRegex(SecretRetrievalError, "service failed"):
+                keysec.get_secret(
+                    "AUDIT_FAILED_SECRET_NAME_MARKER",
+                    provider="failing",
+                )
+
+        contents = audit_path.read_text(encoding="utf-8")
+        for sensitive_value in (
+            secret_name,
+            secret_value,
+            "AUDIT_FAILED_SECRET_NAME_MARKER",
+            plaintext,
+            ciphertext,
+            "service failed",
+        ):
+            self.assertNotIn(sensitive_value, contents)
+
+        entries = [json.loads(line) for line in contents.splitlines()]
+        self.assertEqual(
+            [(entry["operation"], entry["outcome"]) for entry in entries],
+            [
+                ("secret_retrieval", "success"),
+                ("encrypt", "success"),
+                ("decrypt", "success"),
+                ("key_generation", "success"),
+                ("secret_retrieval", "failure"),
+            ],
+        )
+        self.assertEqual(
+            [entry["provider"] for entry in entries],
+            ["primary", "main", "main", "main", "failing"],
+        )
 
 
 if __name__ == "__main__":
