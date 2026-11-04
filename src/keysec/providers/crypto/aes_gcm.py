@@ -14,13 +14,12 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from keysec.model.errors import CryptoError
 from keysec.providers.crypto.crypto_provider import CryptoProvider
 
-_CIPHERTEXT_PREFIX = "ks1:"
 _NONCE_LENGTH = 12
 _KEY_LENGTH = 32
 
 
 class AESGCMProvider(CryptoProvider):
-    """Encrypts UTF-8 text with AES-256-GCM and a versioned string envelope."""
+    """Encrypts UTF-8 text with AES-256-GCM."""
 
     def encrypt(self, plaintext: str, key_file: str | Path | None = None) -> str:
         if not isinstance(plaintext, str):
@@ -29,18 +28,14 @@ class AESGCMProvider(CryptoProvider):
         nonce = os.urandom(_NONCE_LENGTH)
         encrypted = AESGCM(key).encrypt(nonce, plaintext.encode("utf-8"), None)
         encoded = base64.urlsafe_b64encode(nonce + encrypted).rstrip(b"=").decode("ascii")
-        return self.wrap_ciphertext(f"{_CIPHERTEXT_PREFIX}{encoded}")
+        return self.wrap_ciphertext(encoded)
 
     def decrypt(self, ciphertext: str, key_file: str | Path | None = None) -> str:
         if not isinstance(ciphertext, str):
             raise TypeError("Ciphertext must be a string")
         ciphertext = self.unwrap_ciphertext(ciphertext)
-        if not ciphertext.startswith(_CIPHERTEXT_PREFIX):
-            raise CryptoError("Ciphertext format is unsupported or malformed")
-
-        encoded = ciphertext[len(_CIPHERTEXT_PREFIX):]
         try:
-            encoded_bytes = encoded.encode("ascii")
+            encoded_bytes = ciphertext.encode("ascii")
             padded = encoded_bytes + b"=" * (-len(encoded_bytes) % 4)
             payload = base64.b64decode(padded, altchars=b"-_", validate=True)
         except (UnicodeEncodeError, binascii.Error, ValueError) as exc:

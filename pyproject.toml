@@ -14,5 +14,8 @@ dependencies = [
     "cryptography>=41.0",
 ]
 
+[project.scripts]
+keysec = "keysec.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]

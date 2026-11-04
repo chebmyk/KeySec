@@ -78,6 +78,51 @@ keysec:
 
 With that override, call `keysec.get_secret("AZURE(database-password)")`; without it, use `keysec.get_secret("KEY(database-password)")`.
 
+## Command-Line Interface
+
+The package installs a `keysec` command with two operations:
+
+```text
+keysec get-secret SECRET [--provider NAME]
+keysec generate-key --provider NAME [--output PATH]
+```
+
+`get-secret` uses the default service provider unless `--provider` names another configured service provider. The secret argument may be a plain secret name or a wrapped reference such as `KEY(database-password)`. The command prints the retrieved secret value to standard output; take care when running it in terminals or environments that capture command output.
+
+`generate-key` requires the name of a configured crypto provider. If `--output` is omitted, the provider's configured `key_file` path is used. The command creates the key file and prints only its path, never the key bytes. Existing files are not overwritten.
+
+Both operations load configuration from the file named by `KEYSEC_CONFIG`, or `./keysec.yaml` when that variable is unset. Errors are written to standard error and return a non-zero exit status.
+
+## Packaging Builds
+
+The `.ci/` directory contains native-host build scripts for the `keysec` command. They require Python 3.10 or newer. On the first run, scripts create `.ci/.venv` and install the needed build tools; network access is required for those installations. Build outputs are written to `dist/`.
+
+The Linux executable builder also requires `objdump` from the system's `binutils` package.
+
+Build a wheel:
+
+```powershell
+.\.ci\build-wheel-windows.cmd
+```
+
+```sh
+./.ci/build-wheel-unix.sh
+./.ci/build-wheel-macos-arm64.sh
+```
+
+Build a standalone, one-file executable with PyInstaller:
+
+```powershell
+.\.ci\build-executable-windows.cmd
+```
+
+```sh
+./.ci/build-executable-unix.sh
+./.ci/build-executable-macos-arm64.sh
+```
+
+Run each script on its native target: Windows, Linux, or macOS ARM64. The macOS ARM64 scripts reject other operating systems and architectures. The wheel is built from the existing package metadata and is platform-independent; the executable is specific to the host platform and Python runtime.
+
 ## Azure Key Vault
 
 The built-in `azure-key-vault` service provider requires an HTTPS `vault_url`. If `tenant_id`, `client_id`, `client_secret`, and `certificate_path` are all omitted, it uses Azure's `DefaultAzureCredential` chain; for local development, sign in with the Azure CLI. In deployed environments, use the workload's managed or federated identity. Grant the selected identity permission to read secrets from the configured vault (for example, the Key Vault Secrets User data-plane role when using Azure RBAC).
@@ -128,7 +173,7 @@ keysec:
           vault_url: https://example.vault.azure.net/
           tenant_id: 00000000-0000-0000-0000-000000000000
           client_id: 11111111-1111-1111-1111-111111111111
-          client_secret: ENC(ks1:<encrypted-payload>)
+          client_secret: ENC(<base64-payload>)
   crypto:
     default: local
     providers:
@@ -243,4 +288,4 @@ ciphertext = provider.encrypt("Hello, 世界")
 plaintext = provider.decrypt(ciphertext)
 ```
 
-AES-GCM ciphertext is returned as `ENC(ks1:<payload>)` by default. Set `cipher_prefix` in that provider's `settings` to choose another wrapper prefix. The versioned `ks1:` payload remains URL-safe Base64 and contains the 12-byte nonce followed by AES-GCM ciphertext and its 16-byte authentication tag. The nonce is freshly generated for each encryption. UTF-8 is used for text input and output. Decryption accepts both the wrapped form and legacy bare `ks1:` ciphertext, and rejects malformed, unsupported-version, or unauthenticated ciphertext without returning plaintext.
+AES-GCM ciphertext is returned as `ENC(<payload>)` by default; `<payload>` is URL-safe Base64 of the 12-byte nonce followed by AES-GCM ciphertext and its 16-byte authentication tag. Set `cipher_prefix` in that provider's `settings` to choose another wrapper prefix. The nonce is freshly generated for each encryption. UTF-8 is used for text input and output. Decryption accepts the configured wrapped form and rejects malformed or unauthenticated ciphertext. Legacy `ks1:` ciphertext, whether wrapped or bare, is not supported; re-encrypt those values using the current provider before upgrading.

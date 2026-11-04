@@ -11,6 +11,10 @@ from pathlib import Path
 from keysec.model.errors import ConfigurationError, CryptoError
 from keysec.providers.crypto.aes_gcm import AESGCMProvider
 
+_LEGACY_CIPHERTEXT = (
+    "ks1:AAECAwQFBgcICQoLK2exeqac4njkMf_uw50dFffsaSDJzYClpdQOE_KYkJQX"
+)
+
 
 class AESGCMProviderTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -20,10 +24,14 @@ class AESGCMProviderTests(unittest.TestCase):
         self.key_file.write_bytes(bytes(range(32)))
         self.provider = AESGCMProvider("local", {"key_file": str(self.key_file)})
 
-    def test_round_trips_unicode_text_in_versioned_envelope(self) -> None:
+    def test_round_trips_unicode_text_without_internal_version_prefix(self) -> None:
         ciphertext = self.provider.encrypt("Hello, 世界 🌐")
 
-        self.assertTrue(ciphertext.startswith("ENC(ks1:"))
+        self.assertTrue(ciphertext.startswith("ENC("))
+        payload = self.provider.unwrap_ciphertext(ciphertext)
+        self.assertFalse(payload.startswith("ks1:"))
+        decoded = base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))
+        self.assertGreaterEqual(len(decoded), 12 + 16)
         self.assertEqual(self.provider.decrypt(ciphertext), "Hello, 世界 🌐")
 
     def test_round_trips_with_provider_prefix_override(self) -> None:
@@ -33,7 +41,8 @@ class AESGCMProviderTests(unittest.TestCase):
         )
         ciphertext = provider.encrypt("custom prefix")
 
-        self.assertTrue(ciphertext.startswith("SEALED(ks1:"))
+        self.assertTrue(ciphertext.startswith("SEALED("))
+        self.assertFalse(provider.unwrap_ciphertext(ciphertext).startswith("ks1:"))
         self.assertEqual(provider.decrypt(ciphertext), "custom prefix")
 
     def test_rejects_invalid_cipher_prefix_configuration(self) -> None:
@@ -45,12 +54,14 @@ class AESGCMProviderTests(unittest.TestCase):
                         {"key_file": str(self.key_file), "cipher_prefix": prefix},
                     )
 
-    def test_decrypts_legacy_unwrapped_ciphertext(self) -> None:
-        ciphertext = self.provider.encrypt("legacy ciphertext")
-        legacy_ciphertext = self.provider.unwrap_ciphertext(ciphertext)
-
-        self.assertTrue(legacy_ciphertext.startswith("ks1:"))
-        self.assertEqual(self.provider.decrypt(legacy_ciphertext), "legacy ciphertext")
+    def test_rejects_legacy_wrapped_and_unwrapped_ciphertext(self) -> None:
+        for ciphertext in (
+            f"ENC({_LEGACY_CIPHERTEXT})",
+            _LEGACY_CIPHERTEXT,
+        ):
+            with self.subTest(ciphertext=ciphertext):
+                with self.assertRaisesRegex(CryptoError, "unsupported or malformed"):
+                    self.provider.decrypt(ciphertext)
 
     def test_uses_a_fresh_nonce_for_each_encryption(self) -> None:
         first = self.provider.encrypt("same text")
@@ -62,14 +73,13 @@ class AESGCMProviderTests(unittest.TestCase):
 
     def test_rejects_modified_ciphertext_without_returning_plaintext(self) -> None:
         ciphertext = self.provider.encrypt("do not disclose")
+        encoded = self.provider.unwrap_ciphertext(ciphertext)
         payload = bytearray(
-            base64.urlsafe_b64decode(
-                self.provider.unwrap_ciphertext(ciphertext).removeprefix("ks1:") + "=="
-            )
+            base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
         )
         payload[-1] ^= 1
         modified = self.provider.wrap_ciphertext(
-            "ks1:" + base64.urlsafe_b64encode(payload).rstrip(b"=").decode()
+            base64.urlsafe_b64encode(payload).rstrip(b"=").decode()
         )
 
         with self.assertRaisesRegex(CryptoError, "authentication failed") as raised:
@@ -84,6 +94,7 @@ class AESGCMProviderTests(unittest.TestCase):
             "ks1:abc",
             "ENC(ks1:***",
             "ENC(ks1:***))extra",
+            "ENC(***",
         ):
             with self.subTest(ciphertext=ciphertext):
                 with self.assertRaises(CryptoError):
