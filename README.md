@@ -6,6 +6,8 @@ KeySec provides configurable service and cryptography providers for Python appli
 
 KeySec reads the YAML file named by `KEYSEC_CONFIG`; if the environment variable is unset, it looks for `./keysec.yaml`.
 
+The repository includes a credential-free root `keysec.yaml` with a default local AES-GCM provider and a relative key-file path. Only that crypto provider is active by default; a commented Azure Key Vault service-provider example is included for reference. Run `keysec generate-key` from the repository root before using the default crypto provider. The generated `keysec.key` is ignored by Git. Put credentials or other sensitive settings in a separate configuration file and select it with `KEYSEC_CONFIG`; do not add them to the tracked default file.
+
 The file is rooted at `keysec` and has `services` and `crypto` sections. Each section maps configured provider names to an implementation `type` and provider-specific `settings`, and may declare the default provider name:
 
 ```yaml
@@ -61,7 +63,7 @@ ciphertext = crypto.encrypt("Hello, 世界")
 plaintext = crypto.decrypt(ciphertext)
 ```
 
-`get_secret` returns a string. `get_provider(name, provider_type=None)` returns an instantiated provider configured by name. `provider_type` may be `"service"` or `"crypto"`; when omitted, the name must exist in only one category, otherwise lookup raises an ambiguity error. Unknown names and categories raise configuration errors. Crypto-provider instances expose `encrypt`, `decrypt`, and `generate_key`; `KeySec` itself does not.
+`get_secret` returns a string. `get_provider(name, provider_type=None)` returns an instantiated provider configured by name. `provider_type` may be `"service"` or `"crypto"`; when omitted, the name must exist in only one category, otherwise lookup raises an ambiguity error. Passing `name=None` with an explicit provider type selects that category's configured default. Unknown names and categories raise configuration errors. Crypto-provider instances expose `encrypt`, `decrypt`, and `generate_key`; `KeySec` itself does not.
 
 Service providers use `KEY` as the default wrapper for secret identifiers. Existing unwrapped identifiers are also accepted. To use a different prefix for a particular service provider, set `secret_prefix` in that provider's `settings` and use the matching wrapper when calling `get_secret`:
 
@@ -80,18 +82,35 @@ With that override, call `keysec.get_secret("AZURE(database-password)")`; withou
 
 ## Command-Line Interface
 
-The package installs a `keysec` command with two operations:
+The package installs a `keysec` command with these operations:
 
 ```text
 keysec get-secret SECRET [--provider NAME]
-keysec generate-key --provider NAME [--output PATH]
+keysec generate-key [--provider NAME] [--output PATH]
+keysec encrypt [VALUE] [--provider NAME]
+keysec decrypt [VALUE] [--provider NAME]
+keysec list-providers
+keysec list-available-providers
 ```
 
 `get-secret` uses the default service provider unless `--provider` names another configured service provider. The secret argument may be a plain secret name or a wrapped reference such as `KEY(database-password)`. The command prints the retrieved secret value to standard output; take care when running it in terminals or environments that capture command output.
 
-`generate-key` requires the name of a configured crypto provider. If `--output` is omitted, the provider's configured `key_file` path is used. The command creates the key file and prints only its path, never the key bytes. Existing files are not overwritten.
+`generate-key` uses the default crypto provider unless `--provider` names another configured crypto provider. If `--output` is omitted, the selected provider's configured `key_file` path is used. The command creates the key file and prints only its path, never the key bytes. Existing files are not overwritten.
 
-Both operations load configuration from the file named by `KEYSEC_CONFIG`, or `./keysec.yaml` when that variable is unset. Errors are written to standard error and return a non-zero exit status.
+`encrypt` and `decrypt` use the default crypto provider or a named provider. Supply `VALUE` positionally, or omit it to read the value from standard input:
+
+```sh
+keysec encrypt 'Hello, world'
+printf %s 'Hello, world' | keysec encrypt
+keysec decrypt 'ENC(ciphertext)'
+printf %s 'ENC(ciphertext)' | keysec decrypt
+```
+
+Positional plaintext may be recorded in shell history or visible in process arguments. Decryption prints plaintext to standard output, which may be captured by terminal logs or shell redirection; use stdin and handle output accordingly when values are sensitive.
+
+`list-providers` shows configured service and crypto provider categories, names, and implementation types without displaying settings. `list-available-providers` shows provider implementation types registered with the runtime API and does not require a configuration file.
+
+Configured commands load the file named by `KEYSEC_CONFIG`, or `./keysec.yaml` when that variable is unset. Errors are written to standard error and return a non-zero exit status. Run `keysec --help` or `keysec COMMAND --help` for command examples.
 
 ## Packaging Builds
 
@@ -288,4 +307,4 @@ ciphertext = provider.encrypt("Hello, 世界")
 plaintext = provider.decrypt(ciphertext)
 ```
 
-AES-GCM ciphertext is returned as `ENC(<payload>)` by default; `<payload>` is URL-safe Base64 of the 12-byte nonce followed by AES-GCM ciphertext and its 16-byte authentication tag. Set `cipher_prefix` in that provider's `settings` to choose another wrapper prefix. The nonce is freshly generated for each encryption. UTF-8 is used for text input and output. Decryption accepts the configured wrapped form and rejects malformed or unauthenticated ciphertext. Legacy `ks1:` ciphertext, whether wrapped or bare, is not supported; re-encrypt those values using the current provider before upgrading.
+AES-GCM ciphertext is returned as `ENC(<payload>)` by default; `<payload>` is URL-safe Base64 of the 12-byte nonce followed by AES-GCM ciphertext and its 16-byte authentication tag. Set `cipher_prefix` in that provider's `settings` to choose another wrapper prefix. The nonce is freshly generated for each encryption. UTF-8 is used for text input and output. Decryption accepts the configured wrapped form and rejects malformed or unauthenticated ciphertext.

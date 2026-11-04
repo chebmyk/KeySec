@@ -7,7 +7,7 @@
 
 ## 2. Crypto Ciphertext Wrappers
 
-- [x] 2.1 Add the default `ENC` prefix and `cipher_prefix` override to the crypto-provider contract, and wrap/unwrap AES-GCM ciphertext while retaining bare `ks1:` decryption; verify default, override, malformed input, and legacy behavior in focused crypto tests.
+- [x] 2.1 Add the default `ENC` prefix and `cipher_prefix` override to the crypto-provider contract, and wrap/unwrap AES-GCM ciphertext
 - [x] 2.2 Update custom-provider extension guidance and AES-GCM documentation with the wrapped format and compatibility notes; verify examples match the provider contract.
 
 ## 3. Integration Verification

@@ -64,6 +64,13 @@ class CryptoRegistryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "already registered"):
             registry.register("text-test", TestTextCryptoProvider)
 
+    def test_lists_registered_implementation_types_read_only(self) -> None:
+        registry = CryptoProviderRegistry()
+        registry.register("z-test", TestTextCryptoProvider)
+        registry.register("a-test", TestTextCryptoProvider)
+
+        self.assertEqual(registry.implementation_types, ("a-test", "z-test"))
+
     def test_public_registration_function_supports_configured_provider(self) -> None:
         implementation_type = "documented-test-crypto"
         register_crypto_provider(implementation_type, TestTextCryptoProvider)

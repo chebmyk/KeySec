@@ -120,25 +120,40 @@ class KeySec:
 
     def get_provider(
         self,
-        name: str,
+        name: str | None = None,
         provider_type: str | None = None,
     ) -> Provider:
         """Return the configured provider instance selected by name."""
-        if not isinstance(name, str) or not name:
+        if name is not None and (not isinstance(name, str) or not name):
             raise ValueError("Provider name must be a non-empty string")
         if provider_type not in (None, "service", "crypto"):
             raise ConfigurationError("Provider type must be 'service' or 'crypto'")
 
-        service_config = self._config.services.providers.get(name)
-        crypto_config = self._config.crypto.providers.get(name)
         if provider_type == "service":
+            if name is None:
+                return service_provider_registry.create(
+                    self._config.services.select(None)
+                )
+            service_config = self._config.services.providers.get(name)
             if service_config is None:
                 raise ConfigurationError(f"Service provider '{name}' is not configured")
             return service_provider_registry.create(service_config)
         if provider_type == "crypto":
+            if name is None:
+                return crypto_provider_registry.create(
+                    self._config.crypto.select(None)
+                )
+            crypto_config = self._config.crypto.providers.get(name)
             if crypto_config is None:
                 raise ConfigurationError(f"Crypto provider '{name}' is not configured")
             return crypto_provider_registry.create(crypto_config)
+        if name is None:
+            raise ConfigurationError(
+                "Provider type must be specified when selecting a default provider"
+            )
+
+        service_config = self._config.services.providers.get(name)
+        crypto_config = self._config.crypto.providers.get(name)
 
         if service_config is not None and crypto_config is not None:
             raise ConfigurationError(

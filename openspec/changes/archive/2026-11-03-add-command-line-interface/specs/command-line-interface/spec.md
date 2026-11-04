@@ -52,6 +52,48 @@ The installed `keysec` command SHALL provide a `generate-key` operation that gen
 - **WHEN** configuration, provider selection, or key generation fails
 - **THEN** the command reports an error to standard error, returns a non-zero exit status, and does not print key material
 
+### Requirement: Encrypt and decrypt values from the command line
+The installed `keysec` command SHALL provide `encrypt` and `decrypt` operations using the configured default crypto provider or an explicitly named crypto provider.
+
+#### Scenario: Encrypt a positional value
+- **WHEN** a caller runs `keysec encrypt VALUE`
+- **THEN** the command encrypts the value and prints the resulting ciphertext to standard output
+
+#### Scenario: Encrypt a value from standard input
+- **WHEN** a caller runs `keysec encrypt` without a positional value
+- **THEN** the command reads the value from standard input, encrypts it, and prints the resulting ciphertext to standard output
+
+#### Scenario: Decrypt a positional value
+- **WHEN** a caller runs `keysec decrypt CIPHERTEXT`
+- **THEN** the command decrypts the value and prints the resulting plaintext to standard output
+
+#### Scenario: Decrypt a value from standard input
+- **WHEN** a caller runs `keysec decrypt` without a positional value
+- **THEN** the command reads the value from standard input, decrypts it, and prints the resulting plaintext to standard output
+
+#### Scenario: Prefer positional input when standard input is also available
+- **WHEN** a caller supplies a positional value and standard input also contains data
+- **THEN** the command processes the positional value
+
+#### Scenario: Select a crypto provider for encryption or decryption
+- **WHEN** a caller supplies `--provider NAME` to `keysec encrypt` or `keysec decrypt`
+- **THEN** the command uses the named configured crypto provider instead of the default
+
+#### Scenario: Report crypto command errors
+- **WHEN** configuration, provider selection, input parsing, key access, encryption, or decryption fails
+- **THEN** the command reports an error to standard error, returns a non-zero exit status, and does not print a substitute result
+
+### Requirement: Provide a safe default local crypto configuration
+The repository SHALL provide a root `keysec.yaml` with a default local AES-GCM crypto provider and key-file path, while alternative built-in provider examples remain commented out and contain no credentials or key material.
+
+#### Scenario: Use local cryptography without a custom configuration
+- **WHEN** a caller runs a configured CLI operation from the repository root with `KEYSEC_CONFIG` unset
+- **THEN** KeySec loads the root `keysec.yaml` and selects its default AES-GCM crypto provider
+
+#### Scenario: Keep alternative provider examples inactive and safe
+- **WHEN** a caller inspects the default `keysec.yaml`
+- **THEN** only the local AES-GCM provider is active, supported alternative provider examples are comments, and no credentials or key material are present
+
 ### Requirement: List configured providers from the command line
 The installed `keysec` command SHALL provide a `list-providers` operation that lists providers configured in the KeySec configuration without exposing provider settings or secret values.
 
@@ -91,19 +133,19 @@ The installed `keysec` command SHALL show clear usage and at least one valid exa
 
 #### Scenario: Show examples in top-level help
 - **WHEN** a caller runs `keysec --help`
-- **THEN** the help output describes `get-secret`, `generate-key`, `list-providers`, and `list-available-providers` and includes a valid example for each
+- **THEN** the help output describes `get-secret`, `generate-key`, `encrypt`, `decrypt`, `list-providers`, and `list-available-providers` and includes a valid example for each
 
 #### Scenario: Show examples in subcommand help
 - **WHEN** a caller runs `keysec <COMMAND> --help` for any supported command
 - **THEN** the help output includes the command's usage and a valid example
 
 ### Requirement: Use the standard KeySec configuration source for configured operations
-The `get-secret`, `generate-key`, and `list-providers` operations SHALL use the same configuration file selection and provider configuration as the KeySec Python API.
+The `get-secret`, `generate-key`, `encrypt`, `decrypt`, and `list-providers` operations SHALL use the same configuration file selection and provider configuration as the KeySec Python API.
 
 #### Scenario: Honor the configured configuration file
 - **WHEN** `KEYSEC_CONFIG` names a configuration file
-- **THEN** `get-secret`, `generate-key`, and `list-providers` use that file
+- **THEN** `get-secret`, `generate-key`, `encrypt`, `decrypt`, and `list-providers` use that file
 
 #### Scenario: Use the default configuration file
 - **WHEN** `KEYSEC_CONFIG` is unset
-- **THEN** `get-secret`, `generate-key`, and `list-providers` use `./keysec.yaml`
+- **THEN** `get-secret`, `generate-key`, `encrypt`, `decrypt`, and `list-providers` use `./keysec.yaml`

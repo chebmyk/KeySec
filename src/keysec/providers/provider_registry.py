@@ -33,6 +33,11 @@ class ProviderRegistry(Generic[ProviderType]):
             )
         self._implementations[implementation_type] = implementation
 
+    @property
+    def implementation_types(self) -> tuple[str, ...]:
+        """Return registered implementation identifiers in sorted order."""
+        return tuple(sorted(self._implementations))
+
     def create(self, config: ProviderConfig) -> ProviderType:
         try:
             implementation = self._implementations[config.type]

@@ -15,8 +15,9 @@ htmlcov/
 # Local configuration and key material
 .env
 .env.*
-keysec.yaml
 *.key
+keysec.yaml
+!/keysec.yaml
 
 # macOS
 .DS_Store

@@ -1,0 +1,17 @@
+keysec:
+  crypto:
+    default: local
+    providers:
+      local:
+        type: aes-gcm
+        settings:
+          key_file: ./keysec.key
+
+  # Optional service provider example. Uncomment and configure only when needed.
+  # services:
+  #   default: vault
+  #   providers:
+  #     vault:
+  #       type: azure-key-vault
+  #       settings:
+  #         vault_url: https://example.vault.azure.net/
